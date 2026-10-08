@@ -1,0 +1,58 @@
+{
+  "name": "dsh-plugin-control-panel",
+  "version": "0.6.0",
+  "description": "DeepSeek Harness 的跨会话控制面板：指挥台、任务状态、消息和备忘，外加单独一页的今日建议。",
+  "private": true,
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tjiisztiuv/dsh-plugin-control-panel.git"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "inbox-store.js",
+    "memo-store.js",
+    "advice-store.js",
+    "advice-runner.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "scripts/init-inbox.sh"
+  ],
+  "scripts": {
+    "check": "node --check index.js && node --check inbox-store.js && node --check memo-store.js && node --check advice-store.js && node --check advice-runner.js && node --check client.js && bash -n scripts/init-inbox.sh",
+    "test": "node --test \"test/*.test.mjs\"",
+    "test:host": "node --experimental-strip-types --no-warnings --test test/host-source.probe.mjs",
+    "test:simpleagent": "node --test test/simpleagent-compat.probe.mjs"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.2.0-0 <0.3.0-0"
+  },
+  "devDependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-session",
+        "@deepseek-ai/dsh-client-ui-workspace"
+      ]
+    }
+  }
+}
