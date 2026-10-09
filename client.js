@@ -153,6 +153,14 @@ window.__ModuleLoader__.load({
       'advice.lastFailed': '刚才重新生成没成功：{reason}',
       'advice.log': '日志在 {path}',
       'advice.schedule': '每天 {at} 自动生成（{agents}）',
+      'advice.then': '，写好后{actions}',
+      'advice.thenJoin': '、',
+      'advice.thenFile': '写入 {file}',
+      'advice.thenMail': '发邮件',
+      'advice.fileWritten': '{time} 已写入 {file}',
+      'advice.fileFailed': '没写进 {file}：{reason}',
+      'advice.mailed': '{time} 已发邮件',
+      'advice.mailFailed': '邮件没发出去：{reason}',
       'crash': '控制面板渲染出错，多半是宿主接口变了：{reason}',
     };
 
@@ -262,6 +270,14 @@ window.__ModuleLoader__.load({
       'advice.lastFailed': 'Writing it again failed: {reason}',
       'advice.log': 'Log: {path}',
       'advice.schedule': 'Written daily at {at} ({agents})',
+      'advice.then': ', then {actions}',
+      'advice.thenJoin': ' and ',
+      'advice.thenFile': 'written to {file}',
+      'advice.thenMail': 'mailed',
+      'advice.fileWritten': 'Written to {file} at {time}',
+      'advice.fileFailed': 'Could not write {file}: {reason}',
+      'advice.mailed': 'Mailed at {time}',
+      'advice.mailFailed': 'The mail did not go out: {reason}',
       'crash': 'The control panel failed to render, most likely because a host interface changed: {reason}',
     };
 
@@ -451,7 +467,7 @@ window.__ModuleLoader__.load({
     };
 
     const INITIAL_ADVICE = {
-      /** The Host's `advice.today` answer: { enabled, date, at, project, running, record, logPath }, or null. */
+      /** The Host's `advice.today` answer: { enabled, date, at, agents, mail, todayFile, project, running, record, seen, logPath }, or null. */
       data: null,
       /** idle before the first read · loading · ready · error */
       phase: 'idle',
@@ -772,8 +788,13 @@ window.__ModuleLoader__.load({
       const action = (key, onClick) => h('button', {
         type: 'button', className: 'dshcp-link', disabled: busy, onClick: () => { onClick(); },
       }, t(key));
+      // Only the file's name: the Today page has no room for a full path, and the log line names it in full.
+      const file = data !== null && typeof data.todayFile === 'string' && data.todayFile !== '' ? data.todayFile.split('/').pop() : '';
+      const then = [file !== '' ? t('advice.thenFile', { file }) : null, data !== null && data.mail ? t('advice.thenMail') : null]
+        .filter(part => part !== null);
       const schedule = data !== null && data.enabled
         ? t('advice.schedule', { at: data.at, agents: (Array.isArray(data.agents) ? data.agents : []).join(' → ') })
+          + (then.length > 0 ? t('advice.then', { actions: then.join(t('advice.thenJoin')) }) : '')
         : null;
       let placeholder = t('advice.loading');
       const foot = [];
@@ -799,16 +820,22 @@ window.__ModuleLoader__.load({
         }
       } else if (record !== null) {
         const skipped = Array.isArray(record.skipped) ? record.skipped.map(item => item.agent) : [];
+        const mail = record.mail && typeof record.mail === 'object' ? record.mail : null;
+        const written = record.today_file && typeof record.today_file === 'object' ? record.today_file : null;
         foot.push({
           parts: [
             data.project,
             t('advice.meta', { agent: record.model ? `${record.agent} · ${record.model}` : record.agent, time: clockOf(record.generated_at) }),
             skipped.length > 0 ? t('advice.skipped', { agents: skipped.join('、'), agent: record.agent }) : null,
+            written && written.written_at ? t('advice.fileWritten', { time: clockOf(written.written_at), file: file || 'file' }) : null,
+            mail && mail.sent_at ? t('advice.mailed', { time: clockOf(mail.sent_at) }) : null,
             schedule,
             running !== null ? t('advice.regenerating') : action('advice.regenerate', onRun),
           ],
         });
         if (record.error && running === null) foot.push({ kind: 'error', parts: [t('advice.lastFailed', { reason: record.error })] });
+        if (written && written.error) foot.push({ kind: 'error', parts: [t('advice.fileFailed', { file: file || 'file', reason: written.error })] });
+        if (mail && mail.error) foot.push({ kind: 'error', parts: [t('advice.mailFailed', { reason: mail.error })] });
       }
       if (advice.notice !== null) foot.push({ kind: 'error', parts: [advice.notice] });
       return h('div', { className: 'dshcp-advice', 'data-testid': 'control-panel-advice' },

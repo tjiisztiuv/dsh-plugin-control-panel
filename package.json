@@ -25,10 +25,11 @@
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
-    "scripts/init-inbox.sh"
+    "scripts/init-inbox.sh",
+    "scripts/mail-me"
   ],
   "scripts": {
-    "check": "node --check index.js && node --check inbox-store.js && node --check memo-store.js && node --check advice-store.js && node --check advice-runner.js && node --check client.js && bash -n scripts/init-inbox.sh",
+    "check": "node --check index.js && node --check inbox-store.js && node --check memo-store.js && node --check advice-store.js && node --check advice-runner.js && node --check client.js && bash -n scripts/init-inbox.sh && /usr/bin/python3 -c \"import ast, sys; ast.parse(open(sys.argv[1]).read())\" scripts/mail-me",
     "test": "node --test \"test/*.test.mjs\"",
     "test:host": "node --experimental-strip-types --no-warnings --test test/host-source.probe.mjs",
     "test:simpleagent": "node --test test/simpleagent-compat.probe.mjs"

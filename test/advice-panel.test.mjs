@@ -170,6 +170,61 @@ test('a fallback and a failed regeneration are both visible under the advice', a
   panel.dispose()
 })
 
+test('with a mail command the schedule says so, and each day says whether its mail went out', async () => {
+  const { panel, store, today } = await opened({ mailCommand: '/bin/mail-me' }, { open: false })
+  store.write(today, { ...ready(today), mail: { sent_at: isoLocal(new Date(`${today}T08:02:00`)), error: null } })
+  panel.callbacks.onTodayMount()
+  await panel.settle()
+  assert.match(panel.renderToday(), /<span>claude · sonnet 生成于 08:01<\/span><span>08:02 已发邮件<\/span><span>每天 08:00 自动生成（claude），写好后发邮件<\/span>/)
+  assert.doesNotMatch(panel.renderToday(), /role="alert"/)
+  panel.dispose()
+})
+
+test('with a today file the schedule names it, and each day says whether it was written', async () => {
+  const { panel, store, today } = await opened({ todayFile: '/sync/inbox/今日建议.md', mailCommand: '/bin/mail-me' }, { open: false })
+  store.write(today, {
+    ...ready(today),
+    today_file: { written_at: isoLocal(new Date(`${today}T08:01:30`)), error: null },
+    mail: { sent_at: isoLocal(new Date(`${today}T08:02:00`)), error: null },
+  })
+  panel.callbacks.onTodayMount()
+  await panel.settle()
+  assert.match(panel.renderToday(), /<span>08:01 已写入 今日建议\.md<\/span><span>08:02 已发邮件<\/span><span>每天 08:00 自动生成（claude），写好后写入 今日建议\.md、发邮件<\/span>/)
+  panel.dispose()
+})
+
+test('a today file that could not be written says why under the advice', async () => {
+  const { panel, store, today } = await opened({ todayFile: '/sync/inbox/今日建议.md' }, { open: false })
+  store.write(today, { ...ready(today), today_file: { written_at: null, error: '找不到目录 /sync/inbox' } })
+  panel.callbacks.onTodayMount()
+  await panel.settle()
+  const html = panel.renderToday()
+  assert.doesNotMatch(html, /已写入/)
+  assert.match(html, /<span>每天 08:00 自动生成（claude），写好后写入 今日建议\.md<\/span>/)
+  assert.match(html, /role="alert"><span>没写进 今日建议\.md：找不到目录 \/sync\/inbox<\/span>/)
+  panel.dispose()
+})
+
+test('a mail that did not go out says why under the advice', async () => {
+  const { panel, store, today } = await opened({ mailCommand: '/bin/mail-me' }, { open: false })
+  store.write(today, { ...ready(today), mail: { sent_at: null, error: '退出码 1：mail-me: QQ 邮箱登录失败' } })
+  panel.callbacks.onTodayMount()
+  await panel.settle()
+  const html = panel.renderToday()
+  assert.doesNotMatch(html, /已发邮件/)
+  assert.match(html, /role="alert"><span>邮件没发出去：退出码 1：mail-me: QQ 邮箱登录失败<\/span>/)
+  panel.dispose()
+})
+
+test('without a mail command nothing on the page mentions mail', async () => {
+  const { panel, store, today } = await opened({}, { open: false })
+  store.write(today, ready(today))
+  panel.callbacks.onTodayMount()
+  await panel.settle()
+  assert.doesNotMatch(panel.renderToday(), /邮件/)
+  panel.dispose()
+})
+
 test('a failed day says why, where the log is, and offers a retry', async () => {
   const { panel, store, today } = await opened({}, { open: false })
   store.write(today, { date: today, status: 'failed', trigger: 'schedule', error: 'claude：退出码 1：rate limit', failures: 1, last_failed_at: isoLocal(new Date()) })

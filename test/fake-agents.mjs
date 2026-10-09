@@ -6,6 +6,7 @@ import { chmodSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 export const ADVICE = {
+  day: '训练日',
   sport: { headline: '轻松跑 6 km · 心率 ≤145', items: ['先热身 10 分钟', '跑后拉伸腘绳肌'] },
   diet: { headline: '训练日 · 约 1900 kcal', items: ['早餐：燕麦 50 g + 鸡蛋 2 个', '饮水 2500 ml，跑后补 600 ml'] },
   note: '最近没有训练记录，按常用周结构安排。',
@@ -51,5 +52,33 @@ else done()
     path,
     mode: (value) => { writeFileSync(join(dir, `${name}.mode`), value) },
     capture: () => JSON.parse(readFileSync(join(dir, `${name}.capture.json`), 'utf8')),
+  }
+}
+
+/**
+ * A fake mail command named `mail-me` in `dir`. It records its arguments and stdin in `mail-me.capture.json`
+ * and, when `mail-me.mode` says fail, exits 1 the way scripts/mail-me does after its last retry.
+ */
+export function fakeMailer(dir) {
+  const path = join(dir, 'mail-me')
+  writeFileSync(path, `#!${process.execPath}
+const fs = require('fs')
+const path = require('path')
+const own = suffix => path.join(__dirname, 'mail-me.' + suffix)
+let input = ''
+process.stdin.on('data', chunk => { input += chunk }).on('end', () => {
+  fs.writeFileSync(own('capture.json'), JSON.stringify({ args: process.argv.slice(2), input }))
+  const mode = fs.existsSync(own('mode')) ? fs.readFileSync(own('mode'), 'utf8').trim() : 'ok'
+  if (mode === 'fail') {
+    process.stderr.write('mail-me: 第 1 次发送失败（TimeoutError: timed out），20s 后重试\\nmail-me: 发送失败（试了 3 次）：TimeoutError: timed out\\n')
+    process.exit(1)
+  }
+})
+`)
+  chmodSync(path, 0o755)
+  return {
+    path,
+    mode: (value) => { writeFileSync(join(dir, 'mail-me.mode'), value) },
+    capture: () => JSON.parse(readFileSync(join(dir, 'mail-me.capture.json'), 'utf8')),
   }
 }

@@ -5,9 +5,12 @@
  *
  *   <dir>/advice/<YYYY-MM-DD>.json  { date, status, generated_at, agent, model, trigger, duration_ms,
  *                                     sport: { headline, items }, diet: { headline, items }, note,
- *                                     error, failures, last_failed_at }, rewritten atomically
+ *                                     error, failures, last_failed_at, today_file?: { written_at, error },
+ *                                     mail?: { sent_at, error } }, rewritten atomically. `today_file` and
+ *                                     `mail` are there once the today file was written or the mail sent
  *   <dir>/advice/<YYYY-MM-DD>.log   every attempt's command, exit, and output tail; for when a run fails
  *   <dir>/advice/run.lock           { pid, started_at, trigger, agent } while a run is going
+ *   <dir>/advice/replaced/<time>.md what the today file held before the plugin overwrote it, when that differed
  *   <dir>/advice/seen.json          { generated_at, seen_at }: the newest advice the Today page was opened on.
  *                                   A file of its own, so marking it never races a run rewriting the day
  *
@@ -21,6 +24,7 @@ import { isoLocal } from './inbox-store.js'
 export const ADVICE_DIRNAME = 'advice'
 export const LOCK_FILENAME = 'run.lock'
 export const SEEN_FILENAME = 'seen.json'
+export const REPLACED_DIRNAME = 'replaced'
 
 /** `YYYY-MM-DD` of a date in local time. */
 export function localDate(date) {
@@ -107,6 +111,15 @@ export class AdviceStore {
   writeSeen(generatedAt) {
     mkdirSync(this.dir, { recursive: true })
     writeJsonAtomically(join(this.dir, SEEN_FILENAME), { generated_at: generatedAt, seen_at: isoLocal(this.clock()) })
+  }
+
+  /** Keep what an overwritten file held, as `replaced/<local time>.md`. @returns the path it was kept at. */
+  keepReplaced(content) {
+    const dir = join(this.dir, REPLACED_DIRNAME)
+    mkdirSync(dir, { recursive: true })
+    const path = join(dir, `${isoLocal(this.clock()).slice(0, 19).replace(/:/g, '')}.md`)
+    writeFileSync(path, content, 'utf8')
+    return path
   }
 
   /** The lock's content while a live run holds it, else null. */

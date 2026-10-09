@@ -6,7 +6,8 @@
  * memory file); the prompt here only says what to produce today and in which shape. The agent may read
  * but never write: claude gets only its Read, Glob and Grep tools, opencode gets every other permission
  * denied. Agents are tried in order and the first one whose answer parses wins, so a spent claude quota
- * falls through to opencode.
+ * falls through to opencode. Advice that was written can then go where a phone reads it: into a Markdown
+ * file that the user syncs (`todayFile`), and through a mail command of the user's (`mailCommand`).
  *
  * Row config in a profile's cordis.patch.yml, under `advice`:
  *   cwd             project directory the agent runs in; `~` expands. Unset: the feature is off
@@ -16,9 +17,14 @@
  *   claudeModel     passed as --model; "" uses the CLI's own default. Default: sonnet
  *   opencodeModel   passed as -m, e.g. deepseek/deepseek-flash; "" uses opencode.json's. Default: ""
  *   claudeBin, opencodeBin   executable paths when they are not in the usual places
+ *   mailCommand     a command that mails each day's advice once it is written: a path, or a path and its
+ *                   first arguments as a list; `~` expands in the path. It gets the subject as its last
+ *                   argument and the body on stdin, e.g. scripts/mail-me. Unset: no mail
+ *   todayFile       a Markdown file rewritten with each day's advice, holding that day only; `~` expands.
+ *                   Its directory must exist. Unset: no file
  */
 import { spawn } from 'node:child_process'
-import { accessSync, constants, readdirSync, statSync } from 'node:fs'
+import { accessSync, constants, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, delimiter, dirname, join } from 'node:path'
 import { expandHome, isoLocal } from './inbox-store.js'
@@ -29,9 +35,12 @@ export const DEFAULT_AT = '08:00'
 const DEFAULT_TIMEOUT_MINUTES = 10
 const DEFAULT_CLAUDE_MODEL = 'sonnet'
 const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
+const DAY_KINDS = ['训练日', '休息日']
 const STDOUT_LIMIT = 4 * 1024 * 1024
 const STDERR_LIMIT = 256 * 1024
 const LOG_TAIL = 16 * 1024
+/** Long enough for the mail command's own retries: mail-me tries three times, 30 s each, with 80 s between. */
+const MAIL_TIMEOUT_MS = 4 * 60 * 1000
 
 /** Last match wins in opencode's permission rules, so the allows after "*" are what stays possible. */
 const OPENCODE_READ_ONLY = JSON.stringify({ '*': 'deny', read: 'allow', glob: 'allow', grep: 'allow', list: 'allow' })
@@ -65,7 +74,17 @@ export function normalizeAdviceSettings(raw) {
     opencodeModel: stringOr(options.opencodeModel, ''),
     claudeBin: stringOr(options.claudeBin, ''),
     opencodeBin: stringOr(options.opencodeBin, ''),
+    mailCommand: commandOf(options.mailCommand),
+    todayFile: stringOr(options.todayFile, '') === '' ? '' : expandHome(stringOr(options.todayFile, '')),
   }
+}
+
+/** A command as an argument list, from a path or a list starting with one; [] when there is none. */
+function commandOf(value) {
+  const listed = Array.isArray(value) ? value : typeof value === 'string' ? [value] : []
+  const parts = listed.filter(part => typeof part === 'string' || typeof part === 'number').map(part => String(part).trim())
+  if (parts.length === 0 || parts[0] === '') return []
+  return [expandHome(parts[0]), ...parts.slice(1)]
 }
 
 /** Today's moment at which `at` falls, in local time. */
@@ -85,14 +104,16 @@ export function buildPrompt(now) {
 任务：为用户写今天（${day}，${WEEKDAYS[now.getDay()]}，现在 ${time}）的「今日运动计划」和「今日饮食建议」，显示在控制面板顶部。
 
 做法：
-1. 按 AGENTS.md 第 2 节了解现状：当前状态文件（STATUS.md）和 memory.md 必须读，已经在上下文里的不用重复读。
-2. 再只读和今天直接相关的：weekly_plans/ 里日期覆盖今天的周计划（没有就参考最近一份和当前状态里的常用周结构）、运动日志.md 最近的记录、饮食日志.md 开头的营养目标。不要读 健康管理/ 目录。
-3. 只读不写：不要新建、修改、移动或删除任何文件，也不要做 AGENTS.md 4.8 的对话收尾。
-4. 建议必须符合 memory.md 的全部约束（动作选择、先力量后跑步、补水、结石和尿酸、晚餐和油脂、血脂、心脏相关的强度限制等）。
-5. 数据有缺口时（例如最近没有训练记录），给保守、可执行的安排，并在 note 里用一句话说明依据。
+1. 先看当前目录的 AGENTS.md。它是工作区规则时，会说明运动健康项目在哪个子目录（例如 sport_health_cc/）：下面提到的「项目 AGENTS.md」、文件和目录都在那个子目录里。当前目录本身就是项目时，就在当前目录。
+2. 按项目 AGENTS.md 第 2 节了解现状：当前状态文件（STATUS.md）和 memory.md 必须读，已经在上下文里的不用重复读。
+3. 再只读和今天直接相关的：weekly_plans/ 里日期覆盖今天的周计划（没有就参考最近一份和当前状态里的常用周结构）、运动日志.md 最近的记录、饮食日志.md 开头的营养目标。不要读 健康管理/ 目录。
+4. 只读不写：不要新建、修改、移动或删除任何文件，不要运行同步，也不要做项目 AGENTS.md 4.8 的对话收尾。工作区规则里写「今日建议.md」的步骤这次不用你做：控制面板会按你下面的回答写那个文件，你只管回答。那里对内容的要求（每条给具体数字、休息日怎么写、有预警信号就降级）照样适用。
+5. 建议必须符合 memory.md 的全部约束（动作选择、先力量后跑步、补水、结石和尿酸、晚餐和油脂、血脂、心脏相关的强度限制等）。
+6. 有预警信号而降级、改成休息，或者数据有缺口（例如最近没有训练记录）时，给保守、可执行的安排，并在 note 里用一句话说明原因。
 
 输出：只输出一个 JSON 对象，前后不要有任何其他文字，格式如下：
 {
+  "day": "训练日 或 休息日，二选一",
   "sport": {
     "headline": "今天练什么，20 字以内，例如：轻松跑 6 km · 心率 ≤145；休息日也要写，例如：休息日 · 拉伸 15 分钟",
     "items": ["3 到 6 条，每条 40 字以内：具体到动作、距离或时长、组数次数、心率区间、时间段和注意事项"]
@@ -144,7 +165,10 @@ export function parseAdvice(text) {
     if (!isRecord(value)) continue
     const sport = sectionOf(value.sport)
     const diet = sectionOf(value.diet)
-    if (sport !== null && diet !== null) return { sport, diet, note: clip(stringOr(value.note, ''), 200) }
+    const day = stringOr(value.day, '')
+    if (sport !== null && diet !== null) {
+      return { day: DAY_KINDS.includes(day) ? day : '', sport, diet, note: clip(stringOr(value.note, ''), 200) }
+    }
   }
   return null
 }
@@ -248,76 +272,192 @@ function reasonFrom(stderr, stdout) {
 }
 
 /**
- * Run one agent once in the project directory.
- * @returns { ok, text, error, log } where `log` is what goes into the day's log file.
+ * Run a command to its end, keeping the head of its output. `input`, when given, is written to its stdin.
+ * @returns { code, killedBy, error, timedOut, aborted, stdout, stderr, seconds }; `error` is set when it never ran.
  */
-export function runAgentProcess(agent, { settings, prompt, signal, env = process.env }) {
-  const spec = AGENTS[agent]
-  const bin = resolveBin(agent, agent === 'claude' ? settings.claudeBin : settings.opencodeBin, env)
-  const model = agent === 'claude' ? settings.claudeModel : settings.opencodeModel
-  const command = spec.command({ model, cwd: settings.cwd, prompt })
+function runToEnd(bin, args, { cwd, env, input, timeoutMs, signal }) {
   const started = Date.now()
   return new Promise((resolve) => {
     const stdout = collector(STDOUT_LIMIT)
     const stderr = collector(STDERR_LIMIT)
     let settled = false
     let timedOut = false
-    const finish = (result) => {
+    let timer = null
+    let onAbort = null
+    const finish = (outcome) => {
       if (settled) return
       settled = true
       clearTimeout(timer)
-      signal?.removeEventListener('abort', onAbort)
-      const seconds = Math.round((Date.now() - started) / 100) / 10
-      const header = `$ ${bin} ${command.args.map(arg => (arg === prompt ? '<prompt>' : arg)).join(' ')}`
+      if (onAbort !== null) signal?.removeEventListener('abort', onAbort)
       resolve({
-        ...result,
-        log: `${header}\n# ${result.ok ? 'ok' : `failed: ${result.error}`} · ${seconds}s\n`
-          + `## stdout\n${tail(stdout.text)}\n## stderr\n${tail(stderr.text)}\n`,
+        code: null, killedBy: null, error: null, ...outcome, timedOut, aborted: signal?.aborted === true,
+        stdout: stdout.text, stderr: stderr.text, seconds: Math.round((Date.now() - started) / 100) / 10,
       })
     }
     let child
     try {
-      child = spawn(bin, command.args, {
-        cwd: settings.cwd,
-        env: { ...env, ...command.env, PATH: pathFor(bin, env) },
-        stdio: [command.viaStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
-      })
+      child = spawn(bin, args, { cwd, env, stdio: [input !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe'] })
     } catch (error) {
-      finish({ ok: false, text: '', error: `启动不了 ${bin}：${error.message}` })
+      finish({ error })
       return
     }
     const kill = () => {
       child.kill('SIGTERM')
       setTimeout(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL') }, 5000).unref()
     }
-    const timer = setTimeout(() => { timedOut = true; kill() }, settings.timeoutMinutes * 60 * 1000)
+    timer = setTimeout(() => { timedOut = true; kill() }, timeoutMs)
     timer.unref?.()
-    const onAbort = () => { kill() }
+    onAbort = () => { kill() }
     signal?.addEventListener('abort', onAbort)
     child.stdout.on('data', chunk => stdout.push(chunk))
     child.stderr.on('data', chunk => stderr.push(chunk))
-    child.on('error', (error) => {
-      const reason = error.code === 'ENOENT' ? `找不到 ${agent}（${bin}），可以在配置里写 ${agent}Bin` : error.message
-      finish({ ok: false, text: '', error: reason })
-    })
-    child.on('close', (code, killedBy) => {
-      if (timedOut) return finish({ ok: false, text: '', error: `超过 ${settings.timeoutMinutes} 分钟没跑完` })
-      if (signal?.aborted) return finish({ ok: false, text: '', error: '被中止' })
-      if (code !== 0) {
-        const reason = reasonFrom(stderr.text, stdout.text)
-        return finish({ ok: false, text: '', error: `退出码 ${code ?? killedBy}${reason !== '' ? `：${reason}` : ''}` })
-      }
-      try {
-        finish({ ok: true, text: spec.answer(stdout.text), error: null })
-      } catch (error) {
-        finish({ ok: false, text: '', error: clip(String(error.message || error), 160) })
-      }
-    })
-    if (command.viaStdin) {
+    child.on('error', (error) => { finish({ error }) })
+    child.on('close', (code, killedBy) => { finish({ code, killedBy }) })
+    if (input !== undefined) {
       child.stdin.on('error', () => {})
-      child.stdin.end(prompt)
+      child.stdin.end(input)
     }
   })
+}
+
+/** Why a finished {@link runToEnd} failed, or null when it exited 0. `missing` is the message for ENOENT. */
+function failureOf(run, { bin, missing, minutes }) {
+  if (run.error !== null) return run.error.code === 'ENOENT' ? missing : `启动不了 ${bin}：${run.error.message}`
+  if (run.timedOut) return `超过 ${minutes} 分钟没跑完`
+  if (run.aborted) return '被中止'
+  if (run.code !== 0) {
+    const reason = reasonFrom(run.stderr, run.stdout)
+    return `退出码 ${run.code ?? run.killedBy}${reason !== '' ? `：${reason}` : ''}`
+  }
+  return null
+}
+
+/** What one process run adds to the day's log file. */
+function logOf(header, error, run) {
+  return `${header}\n# ${error === null ? 'ok' : `failed: ${error}`} · ${run.seconds}s\n`
+    + `## stdout\n${tail(run.stdout)}\n## stderr\n${tail(run.stderr)}\n`
+}
+
+/**
+ * Run one agent once in the project directory.
+ * @returns { ok, text, error, log } where `log` is what goes into the day's log file.
+ */
+export async function runAgentProcess(agent, { settings, prompt, signal, env = process.env }) {
+  const spec = AGENTS[agent]
+  const bin = resolveBin(agent, agent === 'claude' ? settings.claudeBin : settings.opencodeBin, env)
+  const model = agent === 'claude' ? settings.claudeModel : settings.opencodeModel
+  const command = spec.command({ model, cwd: settings.cwd, prompt })
+  const run = await runToEnd(bin, command.args, {
+    cwd: settings.cwd,
+    env: { ...env, ...command.env, PATH: pathFor(bin, env) },
+    input: command.viaStdin ? prompt : undefined,
+    timeoutMs: settings.timeoutMinutes * 60 * 1000,
+    signal,
+  })
+  let result
+  const failure = failureOf(run, { bin, missing: `找不到 ${agent}（${bin}），可以在配置里写 ${agent}Bin`, minutes: settings.timeoutMinutes })
+  if (failure !== null) {
+    result = { ok: false, text: '', error: failure }
+  } else {
+    try {
+      result = { ok: true, text: spec.answer(run.stdout), error: null }
+    } catch (error) {
+      result = { ok: false, text: '', error: clip(String(error.message || error), 160) }
+    }
+  }
+  const header = `$ ${bin} ${command.args.map(arg => (arg === prompt ? '<prompt>' : arg)).join(' ')}`
+  return { ...result, log: logOf(header, result.error, run) }
+}
+
+/** `周X` of a `YYYY-MM-DD` date. */
+function weekdayOf(date) {
+  const [year, month, day] = date.split('-').map(Number)
+  return WEEKDAYS[new Date(year, month - 1, day).getDay()]
+}
+
+/** `claude · opus 生成于 08:03` without the verb: who wrote a record, and when. */
+function writerOf(record) {
+  return { who: record.model ? `${record.agent} · ${record.model}` : record.agent, time: String(record.generated_at).slice(11, 16) }
+}
+
+/**
+ * A day's advice as a plain-text mail. The subject carries the exercise headline, since that is what a
+ * phone's mail list shows; the body has both columns in full, the note, and who wrote it.
+ */
+export function buildMail(record) {
+  const section = (title, value) => [`${title}：${value.headline}`, ...value.items.map(item => `• ${item}`)].join('\n')
+  const parts = [section('运动', record.sport), section('饮食', record.diet)]
+  if (record.note) parts.push(`提醒：${record.note}`)
+  const { who, time } = writerOf(record)
+  parts.push(`${who} 生成于 ${time}`)
+  return {
+    subject: `今日 ${record.date.slice(5)} ${weekdayOf(record.date)}：${record.sport.headline || '运动计划'}`,
+    body: `${parts.join('\n\n')}\n`,
+  }
+}
+
+/**
+ * A day's advice as the Markdown of the today file, in the shape the SportHealth workspace's AGENTS.md
+ * gives `inbox/今日建议.md`: a title with the date and the kind of day, the note quoted under it, then the
+ * exercise and diet sections, each a headline line and a list. The last line says it was written here.
+ */
+export function buildTodayFile(record) {
+  const title = `今日建议 · ${record.date}（${weekdayOf(record.date)}）${record.day ? `· ${record.day}` : ''}`
+  const section = (name, value) => [
+    `## ${name}`,
+    ...(value.headline ? ['', value.headline] : []),
+    ...(value.items.length > 0 ? ['', ...value.items.map(item => `- ${item}`)] : []),
+  ].join('\n')
+  const { who, time } = writerOf(record)
+  const parts = [`# ${title}`]
+  if (record.note) parts.push(`> ${record.note}`)
+  parts.push(section('运动', record.sport), section('饮食', record.diet), `*${who} 自动生成于 ${time}*`)
+  return `${parts.join('\n\n')}\n`
+}
+
+/** Why a file could not be written, in the words the Today page shows. */
+function writeProblem(path, error) {
+  if (error.code === 'ENOENT') return `找不到目录 ${dirname(path)}`
+  if (error.code === 'EISDIR') return `${path} 是目录`
+  if (error.code === 'EPERM' || error.code === 'EACCES') return `没有权限写 ${path}（文件只读，或 macOS 隐私保护拦下了这个进程）`
+  return `写不了 ${path}：${error.message}`
+}
+
+/**
+ * Overwrite the today file with a day's advice. When the file held something else, that is kept in the
+ * store first: the user may have noted on the phone what they actually did.
+ * @returns { ok, error, replaced } where `replaced` is where the old content was kept, or null.
+ */
+export function writeTodayFile(path, record, store) {
+  const content = buildTodayFile(record)
+  try {
+    let previous = null
+    try {
+      previous = readFileSync(path, 'utf8')
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error
+    }
+    const replaced = previous !== null && previous !== content ? store.keepReplaced(previous) : null
+    // In place, not through a temporary file: a sync job watching the directory would carry that file too.
+    writeFileSync(path, content, 'utf8')
+    return { ok: true, error: null, replaced }
+  } catch (error) {
+    return { ok: false, error: writeProblem(path, error), replaced: null }
+  }
+}
+
+/**
+ * Hand one mail to the configured command: the subject as its last argument, the body on its stdin.
+ * The command does the sending and its own retries; this only waits for it, up to `MAIL_TIMEOUT_MS`.
+ * @returns { ok, error, log }.
+ */
+export async function runMailProcess(command, { subject, body, signal, env = process.env }) {
+  const [bin, ...args] = command
+  const run = await runToEnd(bin, [...args, subject], {
+    env: { ...env, PATH: pathFor(bin, env) }, input: body, timeoutMs: MAIL_TIMEOUT_MS, signal,
+  })
+  const error = failureOf(run, { bin, missing: `找不到发信命令 ${bin}`, minutes: MAIL_TIMEOUT_MS / 60000 })
+  return { ok: error === null, error, log: logOf(`$ ${[bin, ...args].join(' ')} <subject>`, error, run) }
 }
 
 /** Why the project directory cannot be used, or null. macOS privacy protection shows up here as EPERM. */
@@ -336,18 +476,66 @@ function directoryProblem(cwd) {
 
 /**
  * Start one run for today: take the run lock, then try each agent in order until one answers in the agreed
- * shape, and save the result.
+ * shape, and save the result; then write the today file and send the mail, for those that are configured.
  * @returns null when another run holds the lock, else the run's promise of { ok, record }.
  */
-export function startAdvice({ store, settings, trigger, signal, runAgent = runAgentProcess }) {
+export function startAdvice({ store, settings, trigger, signal, runAgent = runAgentProcess, sendMail = runMailProcess }) {
   const lock = store.acquire({ trigger, agent: settings.agents[0] })
-  return lock === null ? null : runLocked({ store, settings, trigger, signal, runAgent, lock })
+  return lock === null ? null : runAndDeliver({ store, settings, trigger, signal, runAgent, sendMail, lock })
 }
 
 /** {@link startAdvice}, awaited. @returns { started: false } when another run holds the lock. */
 export async function generateAdvice(options) {
   const pending = startAdvice(options)
   return pending === null ? { started: false } : { started: true, ...(await pending) }
+}
+
+/**
+ * The run under the lock, then the today file and the mail once the lock is free: a slow mail server keeps
+ * neither the Today page on "writing" nor a manual run waiting.
+ */
+async function runAndDeliver(options) {
+  const outcome = await runLocked(options)
+  if (!outcome.ok) return outcome
+  let record = outcome.record
+  if (options.settings.todayFile !== '') record = saveTodayFile(options, record)
+  if (options.settings.mailCommand.length > 0) record = await mailAdvice(options, record)
+  return { ...outcome, record }
+}
+
+/**
+ * Add fields to the day's record, unless a newer run replaced it meanwhile; that run notes its own.
+ * @returns the record as it stands for this run.
+ */
+function annotate(store, record, fields) {
+  const current = store.read(record.date)
+  if (current === null || current.generated_at !== record.generated_at) return record
+  const next = { ...current, ...fields }
+  store.write(record.date, next)
+  return next
+}
+
+/** Write the today file, log where it went and what it replaced, and note the outcome on the record. */
+function saveTodayFile({ store, settings, trigger }, record) {
+  const result = writeTodayFile(settings.todayFile, record, store)
+  const kept = result.replaced !== null ? `；原来的内容存到 ${result.replaced}` : ''
+  store.log(record.date, `\n===== ${isoLocal(store.clock())} · ${trigger} · 今日文件\n${result.ok ? `写入 ${settings.todayFile}${kept}` : result.error}`)
+  return annotate(store, record, {
+    today_file: result.ok ? { written_at: isoLocal(store.clock()), error: null } : { written_at: null, error: result.error },
+  })
+}
+
+/**
+ * Mail advice that was just written, then note on the day's record whether it went out. A record that a
+ * newer run replaced meanwhile is left alone; that run mails its own. A failed mail is not retried here.
+ */
+async function mailAdvice({ store, settings, trigger, signal, sendMail }, record) {
+  const { subject, body } = buildMail(record)
+  const result = await sendMail(settings.mailCommand, { subject, body, signal })
+  store.log(record.date, `\n===== ${isoLocal(store.clock())} · ${trigger} · 邮件\n${result.log ?? ''}`)
+  return annotate(store, record, {
+    mail: result.ok ? { sent_at: isoLocal(store.clock()), error: null } : { sent_at: null, error: result.error || '发信失败' },
+  })
 }
 
 async function runLocked({ store, settings, trigger, signal, runAgent, lock }) {
@@ -407,12 +595,13 @@ async function runLocked({ store, settings, trigger, signal, runAgent, lock }) {
  * day's run about `firstCheckAfterMs` later.
  */
 export class AdviceService {
-  constructor({ dir, settings, clock = () => new Date(), runAgent = runAgentProcess,
+  constructor({ dir, settings, clock = () => new Date(), runAgent = runAgentProcess, sendMail = runMailProcess,
     checkEveryMs = 5 * 60 * 1000, firstCheckAfterMs = 20 * 1000, retryAfterMs = 30 * 60 * 1000, maxFailures = 3 }) {
     this.settings = normalizeAdviceSettings(settings)
     this.store = new AdviceStore({ dir, clock, staleAfterMs: (this.settings.timeoutMinutes * this.settings.agents.length + 10) * 60 * 1000 })
     this.clock = clock
     this.runAgent = runAgent
+    this.sendMail = sendMail
     this.checkEveryMs = checkEveryMs
     this.firstCheckAfterMs = firstCheckAfterMs
     this.retryAfterMs = retryAfterMs
@@ -434,6 +623,8 @@ export class AdviceService {
       date,
       at: this.settings.at,
       agents: this.settings.agents,
+      mail: this.settings.mailCommand.length > 0,
+      todayFile: this.settings.todayFile,
       project: this.enabled ? basename(this.settings.cwd) : '',
       running: running === null ? null : { started_at: running.started_at, trigger: running.trigger, agent: running.agent },
       record: this.enabled ? this.store.read(date) : null,
@@ -462,7 +653,9 @@ export class AdviceService {
   /** Start a run in the background. @returns whether it started (false: off, or another run is going). */
   run(trigger) {
     if (!this.enabled) return false
-    const pending = startAdvice({ store: this.store, settings: this.settings, trigger, signal: this.abort.signal, runAgent: this.runAgent })
+    const pending = startAdvice({
+      store: this.store, settings: this.settings, trigger, signal: this.abort.signal, runAgent: this.runAgent, sendMail: this.sendMail,
+    })
     if (pending === null) return false
     this.current = pending.catch((error) => { console.error('dsh-plugin-control-panel: advice run failed', error) })
       .finally(() => { this.current = null })
