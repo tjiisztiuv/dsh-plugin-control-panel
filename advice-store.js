@@ -16,6 +16,8 @@
  *
  * `status` is "ready" once any run of the day succeeded; a later failed run keeps that content and only sets
  * `error`. It is "failed" when no run of the day has succeeded yet.
+ *
+ * The desk's Nasdaq line (nasdaq-runner.js) keeps its days, logs, and lock the same way, in `<dir>/nasdaq/`.
  */
 import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
 import { join } from 'node:path'
@@ -62,9 +64,10 @@ export class AdviceStore {
    * @param options.dir - the plugin's data directory; advice lives in its `advice/` subdirectory.
    * @param options.clock - returns the current Date; injectable so tests can move time.
    * @param options.staleAfterMs - a lock older than this is abandoned even if its process still exists.
+   * @param options.name - the subdirectory, for another daily job that keeps its days the same way.
    */
-  constructor({ dir, clock = () => new Date(), staleAfterMs = 60 * 60 * 1000 }) {
-    this.dir = join(dir, ADVICE_DIRNAME)
+  constructor({ dir, clock = () => new Date(), staleAfterMs = 60 * 60 * 1000, name = ADVICE_DIRNAME }) {
+    this.dir = join(dir, name)
     this.clock = clock
     this.staleAfterMs = staleAfterMs
   }

@@ -6,16 +6,20 @@
  *
  * It also runs the daily advice (advice-runner.js): a schedule that asks an agent for today's exercise plan
  * and diet suggestion once a day, and three routes that show it, re-run it, and record that it was seen.
+ * The desk's Nasdaq line works the same way (nasdaq-runner.js): a schedule that runs the nasdaq_valuation tool
+ * once a day, and two routes that show its numbers and re-run it.
  *
  * Row config in a profile's cordis.patch.yml:
  *   inboxDir             directory holding inbox.jsonl, state.json, todos.json, and advice/; `~` expands.
  *                        Default: $DSH_CONTROL_PANEL_DIR, else ~/.dsh-control-panel
  *   archiveAfterMinutes  minutes from first open to automatic archiving. Default: 30
  *   advice               the daily advice; see advice-runner.js. Off until `advice.cwd` is set
+ *   nasdaq               the desk's Nasdaq line; see nasdaq-runner.js. Off until `nasdaq.cwd` is set
  */
 import { AdviceService } from './advice-runner.js'
 import { DEFAULT_ARCHIVE_AFTER_MINUTES, InboxStore, defaultInboxDir, expandHome } from './inbox-store.js'
 import { MemoStore } from './memo-store.js'
+import { NasdaqService } from './nasdaq-runner.js'
 
 export const name = 'dsh-plugin-control-panel'
 export const inject = ['connection']
@@ -54,6 +58,12 @@ export function createMemoStore(config, env = process.env) {
 export function createAdviceService(config, env = process.env, options = {}) {
   const advice = config !== null && typeof config === 'object' ? config.advice : undefined
   return new AdviceService({ dir: directoryOf(config, env), settings: advice, ...options })
+}
+
+/** So does the Nasdaq line's. `options` reaches NasdaqService, so tests can swap the clock and the command. */
+export function createNasdaqService(config, env = process.env, options = {}) {
+  const nasdaq = config !== null && typeof config === 'object' ? config.nasdaq : undefined
+  return new NasdaqService({ dir: directoryOf(config, env), settings: nasdaq, ...options })
 }
 
 async function bodyOf(request) {
@@ -179,12 +189,29 @@ export function adviceRoutes(advice) {
   ]
 }
 
+/** The Nasdaq line's routes; like the advice's, a run started here goes on in the background. */
+export function nasdaqRoutes(nasdaq) {
+  return [
+    { suffix: 'nasdaq.today', methods: ['GET'], handle: () => json(nasdaq.status()) },
+    {
+      suffix: 'nasdaq.run',
+      methods: ['POST'],
+      handle: () => {
+        if (!nasdaq.enabled) return json({ error: 'nasdaq.cwd is not configured' }, 400)
+        return json({ started: nasdaq.run('manual'), ...nasdaq.status() })
+      },
+    },
+  ]
+}
+
 export function apply(ctx, config) {
   const store = createInboxStore(config)
   const memos = createMemoStore(config)
   const advice = createAdviceService(config)
+  const nasdaq = createNasdaqService(config)
   ctx.effect(() => advice.start(), 'control-panel: advice schedule')
-  for (const route of [...inboxRoutes(store), ...memoRoutes(memos), ...adviceRoutes(advice)]) {
+  ctx.effect(() => nasdaq.start(), 'control-panel: nasdaq schedule')
+  for (const route of [...inboxRoutes(store), ...memoRoutes(memos), ...adviceRoutes(advice), ...nasdaqRoutes(nasdaq)]) {
     ctx.effect(() => ctx.connection.fetch.register({
       path: `${ROUTE_PREFIX}${route.suffix}`,
       methods: route.methods,

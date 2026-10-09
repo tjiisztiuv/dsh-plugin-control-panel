@@ -7,11 +7,12 @@
  * a chosen workspace, and shows the inbox that scripts push messages into. The
  * Today page shows today's exercise plan and diet suggestion, which the Host
  * half has an agent write once a day; the desk keeps one line about it that
- * opens the page.
+ * opens the page, and under it one line of Nasdaq numbers that the Host half
+ * gets from the nasdaq_valuation tool once a day.
  *
  * Sessions and workspaces come from the Web client's own services
  * (`ctx.sessions`, `ctx.workspaces`, `ctx.uiWorkspace`) and the global selector
- * hooks every slot component receives. The inbox, memos, and daily advice come
+ * hooks every slot component receives. The inbox, memos, daily advice, and Nasdaq numbers come
  * from this bundle's Host half over `/api` routes. No Harness client package is imported as a module;
  * React comes from the host's module table.
  *
@@ -44,7 +45,7 @@ window.__ModuleLoader__.load({
     const API_BASE = 'api/control-panel.';
     const INBOX_POLL_MS = 30000;
     const INBOX_LIMIT = { active: 50, archived: 100 };
-    /** While an advice run is going, the panel checks this often instead of on the 30-second poll. */
+    /** While an advice or Nasdaq run is going, the page showing it checks this often instead of on the 30-second poll. */
     const ADVICE_FOLLOW_MS = 5000;
 
     const zh = {
@@ -161,6 +162,22 @@ window.__ModuleLoader__.load({
       'advice.fileFailed': '没写进 {file}：{reason}',
       'advice.mailed': '{time} 已发邮件',
       'advice.mailFailed': '邮件没发出去：{reason}',
+      'nasdaq.label': '纳指',
+      'nasdaq.valuation': '乖离分',
+      'nasdaq.sma': 'SMA',
+      'nasdaq.empty': '还没有数据',
+      'nasdaq.running': '正在更新…',
+      'nasdaq.updated': '{time} 更新',
+      'nasdaq.waiting': '{at} 自动更新',
+      'nasdaq.pending': '几分钟内自动更新',
+      'nasdaq.failed': '更新失败',
+      'nasdaq.failedHint': '更新失败：{reason}',
+      'nasdaq.refresh': '刷新',
+      'nasdaq.retry': '重试',
+      'nasdaq.runNow': '现在更新',
+      'nasdaq.closeDetail': '{date} 收盘 {close}',
+      'nasdaq.prevDetail': '，前一交易日 {date} 收盘 {close}',
+      'nasdaq.log': '日志在 {path}',
       'crash': '控制面板渲染出错，多半是宿主接口变了：{reason}',
     };
 
@@ -278,6 +295,22 @@ window.__ModuleLoader__.load({
       'advice.fileFailed': 'Could not write {file}: {reason}',
       'advice.mailed': 'Mailed at {time}',
       'advice.mailFailed': 'The mail did not go out: {reason}',
+      'nasdaq.label': 'Nasdaq',
+      'nasdaq.valuation': 'Deviation',
+      'nasdaq.sma': 'SMA',
+      'nasdaq.empty': 'No numbers yet',
+      'nasdaq.running': 'Updating…',
+      'nasdaq.updated': 'Updated {time}',
+      'nasdaq.waiting': 'Updates at {at}',
+      'nasdaq.pending': 'Updates within minutes',
+      'nasdaq.failed': 'Update failed',
+      'nasdaq.failedHint': 'Update failed: {reason}',
+      'nasdaq.refresh': 'Refresh',
+      'nasdaq.retry': 'Retry',
+      'nasdaq.runNow': 'Update now',
+      'nasdaq.closeDetail': 'Closed at {close} on {date}',
+      'nasdaq.prevDetail': ', previous close {close} on {date}',
+      'nasdaq.log': 'Log: {path}',
       'crash': 'The control panel failed to render, most likely because a host interface changed: {reason}',
     };
 
@@ -440,6 +473,22 @@ window.__ModuleLoader__.load({
 .dshcp-today-kind { margin-right: 6px; color: var(--dsw-alias-label-tertiary); }
 .dshcp-today-line[data-kind='error'] .dshcp-today-text { color: var(--dsw-alias-state-error-primary); }
 .dshcp-today-go { flex: none; color: var(--dsw-alias-link); }
+.dshcp-glance { display: flex; flex-direction: column; gap: 8px; margin: 0 0 24px; }
+.dshcp-glance:empty { display: none; }
+.dshcp-glance > .dshcp-today-line { margin: 0; }
+.dshcp-nasdaq-line { display: flex; align-items: baseline; gap: 12px; padding: 8px 12px; border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: 12px; background: var(--dsw-alias-bg-layer-1); font-size: 13px; line-height: 21px; }
+.dshcp-nasdaq-label { flex: none; font-weight: 500; }
+.dshcp-nasdaq-text { flex: 1; min-width: 0; overflow: hidden; color: var(--dsw-alias-label-secondary); text-overflow: ellipsis;
+  white-space: nowrap; font-variant-numeric: tabular-nums; }
+.dshcp-nasdaq-part + .dshcp-nasdaq-part { margin-left: 16px; }
+.dshcp-nasdaq-kind { margin-right: 6px; color: var(--dsw-alias-label-tertiary); }
+.dshcp-nasdaq-change { font-weight: 500; }
+.dshcp-nasdaq-change[data-dir='up'] { color: var(--dsw-alias-state-success-primary); }
+.dshcp-nasdaq-change[data-dir='down'] { color: var(--dsw-alias-state-error-primary); }
+.dshcp-nasdaq-side { flex: none; display: flex; align-items: baseline; gap: 8px; color: var(--dsw-alias-label-caption); font-size: 12px; }
+.dshcp-nasdaq-side .dshcp-link { font-size: 12px; }
+.dshcp-nasdaq-line[data-kind='error'] .dshcp-nasdaq-status { color: var(--dsw-alias-state-error-primary); }
 `;
 
     const identity = value => value;
@@ -468,6 +517,18 @@ window.__ModuleLoader__.load({
 
     const INITIAL_ADVICE = {
       /** The Host's `advice.today` answer: { enabled, date, at, agents, mail, todayFile, project, running, record, seen, logPath }, or null. */
+      data: null,
+      /** idle before the first read · loading · ready · error */
+      phase: 'idle',
+      error: null,
+      /** True while a run request is in flight, so a second click cannot send another. */
+      starting: false,
+      /** Why the last run request was refused, or null. */
+      notice: null,
+    };
+
+    const INITIAL_NASDAQ = {
+      /** The Host's `nasdaq.today` answer: { enabled, date, at, running, record, latest, logPath }, or null. */
       data: null,
       /** idle before the first read · loading · ready · error */
       phase: 'idle',
@@ -881,6 +942,88 @@ window.__ModuleLoader__.load({
       h('span', { className: 'dshcp-today-go' }, `${t('today.open')} →`));
     }
 
+    /** "10-08 周四" for a session's `YYYY-MM-DD`. */
+    function sessionLabel(t, date) {
+      const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(typeof date === 'string' ? date : '');
+      if (!match) return '';
+      let weekday = '';
+      try {
+        weekday = new Intl.DateTimeFormat(t('intl'), { weekday: 'short' })
+          .format(new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+      } catch (error) {
+        // the date alone
+      }
+      return weekday ? `${match[2]}-${match[3]} ${weekday}` : `${match[2]}-${match[3]}`;
+    }
+
+    function priceOf(t, value) {
+      if (typeof value !== 'number') return '—';
+      try {
+        return new Intl.NumberFormat(t('intl'), { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
+      } catch (error) {
+        return value.toFixed(2);
+      }
+    }
+
+    /**
+     * The desk's line of Nasdaq numbers, under today's: the last session's change, the deviation-percentile
+     * score, and the SMA score, then how today's update went. The numbers are the newest that were fetched, so
+     * they stay up while today's update is pending or failed; the session date says how old they are.
+     * Nothing while it is not configured.
+     */
+    function NasdaqLine({ t, nasdaq, onRun }) {
+      const data = nasdaq.data;
+      if (data === null || !data.enabled) return null;
+      const latest = data.latest;
+      const today = data.record;
+      const reason = nasdaq.notice !== null ? nasdaq.notice : today && today.error ? today.error : null;
+      let kind;
+      let status;
+      let actionKey = 'nasdaq.refresh';
+      if (data.running !== null || nasdaq.starting) {
+        status = t('nasdaq.running');
+        actionKey = null;
+      } else if (reason !== null) {
+        kind = 'error';
+        status = t('nasdaq.failed');
+        actionKey = 'nasdaq.retry';
+      } else if (today && today.status === 'ready') {
+        status = t('nasdaq.updated', { time: clockOf(today.generated_at) });
+      } else {
+        status = Date.now() < dueTimeOf(data.at) ? t('nasdaq.waiting', { at: data.at }) : t('nasdaq.pending');
+        actionKey = 'nasdaq.runNow';
+      }
+      let text;
+      const detail = [];
+      if (latest) {
+        const change = typeof latest.change_pct === 'number' ? latest.change_pct : null;
+        const part = (key, label, value) => h('span', { key, className: 'dshcp-nasdaq-part' },
+          h('span', { className: 'dshcp-nasdaq-kind' }, label), value);
+        text = [
+          part('session', sessionLabel(t, latest.report_date), h('span', {
+            className: 'dshcp-nasdaq-change',
+            'data-dir': change === null ? undefined : change > 0 ? 'up' : change < 0 ? 'down' : 'flat',
+          }, change === null ? '—' : `${change > 0 ? '+' : ''}${change.toFixed(2)}%`)),
+          part('valuation', t('nasdaq.valuation'), Number(latest.valuation_score).toFixed(1)),
+          part('sma', t('nasdaq.sma'), `${latest.sma_score}/5`),
+        ];
+        detail.push(t('nasdaq.closeDetail', { date: latest.report_date, close: priceOf(t, latest.close) })
+          + (latest.prev_date ? t('nasdaq.prevDetail', { date: latest.prev_date, close: priceOf(t, latest.prev_close) }) : ''));
+      } else {
+        text = reason !== null ? t('nasdaq.failedHint', { reason }) : t('nasdaq.empty');
+      }
+      if (kind === 'error') detail.push(t('nasdaq.failedHint', { reason }), t('nasdaq.log', { path: data.logPath }));
+      return h('div', {
+        className: 'dshcp-nasdaq-line', 'data-kind': kind, 'data-testid': 'control-panel-nasdaq-line',
+        title: detail.length > 0 ? detail.join('\n') : undefined,
+      },
+      h('span', { className: 'dshcp-nasdaq-label' }, t('nasdaq.label')),
+      h('span', { className: 'dshcp-nasdaq-text' }, text),
+      h('span', { className: 'dshcp-nasdaq-side' },
+        h('span', { className: 'dshcp-nasdaq-status' }, status),
+        actionKey !== null ? h('button', { type: 'button', className: 'dshcp-link', onClick: () => { onRun(); } }, t(actionKey)) : null));
+    }
+
     /** "10月8日星期四" for the Host's `YYYY-MM-DD`, or for this browser's today until the Host has answered. */
     function dateLabel(t, date) {
       const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(typeof date === 'string' ? date : '');
@@ -1060,7 +1203,7 @@ window.__ModuleLoader__.load({
         useInbox, onPanelMount, onInboxView, onMessageOpen, onMarkAllRead, onInboxRetry,
         onDetailClose, onDetailArchive, onDetailCopy, onDetailMemo,
         useMemos, onMemoDraft, onMemoSubmit, onMemoToggle, onMemoRemove, onMemoGoto, onMemoRetry, onTaskMemo,
-        useAdvice, onOpenToday,
+        useAdvice, onOpenToday, useNasdaq, onNasdaqRun,
       } = props;
       // The three host hooks are global slot props; a missing one degrades to an empty view instead of a crash.
       const sessions = (typeof useSessions === 'function' ? useSessions(identity) : undefined) || EMPTY_SESSIONS;
@@ -1070,6 +1213,7 @@ window.__ModuleLoader__.load({
       const inbox = useInbox(identity);
       const memos = useMemos(identity);
       const advice = useAdvice(identity);
+      const nasdaq = useNasdaq(identity);
       const todo = memos.items.filter(item => !item.done).length;
       const now = useNow(30000);
       // Tells the plugin the panel is on screen, so the 30-second poll reads the list instead of only the counts.
@@ -1092,7 +1236,10 @@ window.__ModuleLoader__.load({
                 h(Stat, { value: inbox.counts.unread, label: t('stat.unread'), tone: inbox.counts.unread > 0 ? 'active' : undefined }),
                 h(Stat, { value: todo, label: t('stat.todo') }),
                 h(Stat, { value: model.total, label: t('stat.recent') }))),
-            h(TodayLine, { t, advice, onOpen: onOpenToday }),
+            // Either line may be absent; with neither, the box hides itself.
+            h('div', { className: 'dshcp-glance' },
+              h(TodayLine, { t, advice, onOpen: onOpenToday }),
+              h(NasdaqLine, { t, nasdaq, onRun: onNasdaqRun })),
             h('div', { className: 'dshcp-cols' },
               h('div', { className: 'dshcp-main' },
                 h('div', { className: 'dshcp-section' },
@@ -1376,6 +1523,53 @@ window.__ModuleLoader__.load({
           }
         };
 
+        // ---- Nasdaq line -------------------------------------------------------------------------------
+        const nasdaq = createStore(INITIAL_NASDAQ);
+        const patchNasdaq = (change) => { nasdaq.set({ ...nasdaq.getSnapshot(), ...change }); };
+        /** Raised by every read and every run request, so an older read cannot overwrite a newer answer. */
+        let nasdaqRead = 0;
+        /** The pending quick re-read while a run is going, or null. */
+        let nasdaqFollow = null;
+
+        /** While a run is going and the desk is on screen, read again in a few seconds instead of 30. */
+        const followNasdaq = () => {
+          const data = nasdaq.getSnapshot().data;
+          if (nasdaqFollow !== null || mounted === 0 || data === null || data.running === null) return;
+          nasdaqFollow = setTimeout(() => {
+            nasdaqFollow = null;
+            void refreshNasdaq();
+          }, ADVICE_FOLLOW_MS);
+          if (typeof nasdaqFollow === 'object' && typeof nasdaqFollow.unref === 'function') nasdaqFollow.unref();
+        };
+
+        const refreshNasdaq = async () => {
+          const read = ++nasdaqRead;
+          if (nasdaq.getSnapshot().phase === 'idle') patchNasdaq({ phase: 'loading' });
+          try {
+            const value = await api('nasdaq.today');
+            if (read !== nasdaqRead) return;
+            patchNasdaq({ data: value, phase: 'ready', error: null });
+            followNasdaq();
+          } catch (error) {
+            // The line stays as it was: hidden before the first answer, so a Host half without these routes costs nothing.
+            if (read !== nasdaqRead) return;
+            patchNasdaq({ phase: 'error', error: reasonOf(error) });
+          }
+        };
+
+        const runNasdaq = async () => {
+          if (nasdaq.getSnapshot().starting) return;
+          patchNasdaq({ starting: true, notice: null });
+          try {
+            const value = await api('nasdaq.run', { body: {} });
+            nasdaqRead += 1;
+            patchNasdaq({ data: value, phase: 'ready', error: null, starting: false });
+            followNasdaq();
+          } catch (error) {
+            patchNasdaq({ starting: false, notice: reasonOf(error) });
+          }
+        };
+
         /** Show a session only if the host still lists it; opening an unknown id would throw inside the host. */
         const openListedSession = (sessionId) => {
           const listed = ctx.sessions.list.getSnapshot();
@@ -1391,6 +1585,7 @@ window.__ModuleLoader__.load({
           if (mounted > 0) {
             void refreshInbox();
             void refreshMemos();
+            void refreshNasdaq();
           } else {
             void refreshCounts();
           }
@@ -1407,6 +1602,7 @@ window.__ModuleLoader__.load({
           return () => {
             clearInterval(timer);
             if (adviceFollow !== null) clearTimeout(adviceFollow);
+            if (nasdaqFollow !== null) clearTimeout(nasdaqFollow);
             if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisibility);
           };
         }, 'control-panel: inbox polling');
@@ -1511,7 +1707,7 @@ window.__ModuleLoader__.load({
           },
         };
         const panelFace = {
-          hooks: { desk, inbox, memos, advice },
+          hooks: { desk, inbox, memos, advice, nasdaq },
           onOpenToday: () => {
             try {
               ctx.layout.selectPanel(TODAY_ID);
@@ -1519,6 +1715,7 @@ window.__ModuleLoader__.load({
               console.debug('dsh-plugin-control-panel: could not open the Today page', error);
             }
           },
+          onNasdaqRun: () => { void runNasdaq(); },
           onMemoDraft: (draft) => { patchMemos({ draft }); },
           onMemoSubmit: () => { void submitMemo(); },
           onMemoToggle: (item) => { void changeMemos('memo.update', { id: item.id, done: !item.done }); },
@@ -1542,6 +1739,7 @@ window.__ModuleLoader__.load({
             void refreshInbox();
             void refreshMemos();
             void refreshAdvice();
+            void refreshNasdaq();
             return () => { mounted -= 1; };
           },
           onInboxView: (view) => {

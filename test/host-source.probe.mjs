@@ -14,7 +14,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { loadDefinition, React } from './fake-host.mjs'
-import { adviceRoutes, inboxRoutes, memoRoutes } from '../index.js'
+import { adviceRoutes, inboxRoutes, memoRoutes, nasdaqRoutes } from '../index.js'
 
 const root = process.env.DSH_SRC ? resolve(process.env.DSH_SRC) : undefined
 const skip = root === undefined ? 'DSH_SRC is not set' : !existsSync(join(root, 'packages')) ? `${root} is not a DSH checkout` : false
@@ -83,7 +83,7 @@ test('the host\'s route registry would accept the Host half\'s routes', { skip }
   const methods = /export type ConnectionFetchMethod = (.+)\n/.exec(
     readFileSync(join(root, 'packages/client/connection/src/rpc.ts'), 'utf8'))
   assert.ok(methods, 'the Fetch method type moved')
-  for (const route of [...inboxRoutes({}), ...memoRoutes({}), ...adviceRoutes({})]) {
+  for (const route of [...inboxRoutes({}), ...memoRoutes({}), ...adviceRoutes({}), ...nasdaqRoutes({})]) {
     assert.match(`control-panel.${route.suffix}`, segment)
     for (const method of route.methods) assert.ok(methods[1].includes(`'${method}'`), `${method} is no longer a route method`)
   }

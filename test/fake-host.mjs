@@ -131,6 +131,7 @@ export function mount(state) {
     useInbox: selector => selector(hooks.inbox.getSnapshot()),
     useMemos: selector => selector(hooks.memos.getSnapshot()),
     useAdvice: selector => selector(hooks.advice.getSnapshot()),
+    useNasdaq: selector => selector(hooks.nasdaq.getSnapshot()),
     ...deskCallbacks,
     ...overrides,
   })
@@ -150,6 +151,7 @@ export function mount(state) {
     inbox: hooks.inbox,
     memos: hooks.memos,
     advice: hooks.advice,
+    nasdaq: hooks.nasdaq,
     /** A second handle on the same directory, standing in for a script that pushes messages. */
     outside: options => new InboxStore({ dir: inboxDir, ...options }),
     /** The memo file as another tool sharing the directory would read and write it. */

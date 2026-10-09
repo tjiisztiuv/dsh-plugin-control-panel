@@ -1,7 +1,7 @@
 {
   "name": "dsh-plugin-control-panel",
   "version": "0.6.0",
-  "description": "DeepSeek Harness 的跨会话控制面板：指挥台、任务状态、消息和备忘，外加单独一页的今日建议。",
+  "description": "DeepSeek Harness 的跨会话控制面板：指挥台、任务状态、消息和备忘，外加单独一页的今日建议和一行纳指数据。",
   "private": true,
   "type": "module",
   "repository": {
@@ -21,6 +21,7 @@
     "memo-store.js",
     "advice-store.js",
     "advice-runner.js",
+    "nasdaq-runner.js",
     "client.js",
     "cordis.patch.yml",
     "locale/*.json",
@@ -29,7 +30,7 @@
     "scripts/mail-me"
   ],
   "scripts": {
-    "check": "node --check index.js && node --check inbox-store.js && node --check memo-store.js && node --check advice-store.js && node --check advice-runner.js && node --check client.js && bash -n scripts/init-inbox.sh && /usr/bin/python3 -c \"import ast, sys; ast.parse(open(sys.argv[1]).read())\" scripts/mail-me",
+    "check": "node --check index.js && node --check inbox-store.js && node --check memo-store.js && node --check advice-store.js && node --check advice-runner.js && node --check nasdaq-runner.js && node --check client.js && bash -n scripts/init-inbox.sh && /usr/bin/python3 -c \"import ast, sys; ast.parse(open(sys.argv[1]).read())\" scripts/mail-me",
     "test": "node --test \"test/*.test.mjs\"",
     "test:host": "node --experimental-strip-types --no-warnings --test test/host-source.probe.mjs",
     "test:simpleagent": "node --test test/simpleagent-compat.probe.mjs"

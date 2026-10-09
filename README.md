@@ -7,6 +7,7 @@
 - 左栏多两个入口：「控制面板」和「今日」，点开后只换主区域，左栏不动。「控制面板」图标在有未读消息时右上角有红点；「今日」图标在今天的建议写好、但你还没打开「今日」看过时有红点。
 - **状态带**：运行中、等待处理、未读消息、待办、近 24 小时任务数。
 - **今日**：单独一页，两列显示今天的运动计划和饮食建议，条目全部展开。每天定时让 claude（不行就换 opencode）在你指定的项目目录里读资料写出来，见[今日建议](#今日建议)一节。控制面板标题下面留一行今天的两句提要（或者「正在生成」「还没生成出来」），点一下跳到「今日」；没配置建议时这一行不出现。想在手机上看，可以让它写好后再写进一个同步的 Markdown 文件、发一封邮件，见[写进文件](#写进文件)和[发到邮箱](#发到邮箱)。
+- **纳指**：「今日」那一行下面再一行纳指摘要：最近一个交易日的涨跌幅、乖离分位评分、SMA 三线评分。每天 08:10 后跑一次 HappyLifeFinance 的 `nasdaq_valuation` 拿数，见[纳指](#纳指)一节；没配置时这一行不出现。
 - **指挥台**：输入一句任务，回车下发到所选工作区的一个新会话。以 `@工作区名` 开头可以直接指定工作区；只写 `@工作区名` 则只切换目标工作区。
 - **任务列表**：所有工作区里正在运行、等待你处理、或近 24 小时动过的会话。等待处理的排最前，点一行跳到那个会话。
 - **消息**：脚本和例行任务投进来的结论。点开看全文，点开 30 分钟后自动归档，也可以手动归档或全部已读。投递就是往一个文件里追加一行 JSON，格式见下面的[消息](#消息)一节。
@@ -363,6 +364,65 @@ credentials = ~/path/to/qq_mail.ini   # 里面是 [qq_mail] 段的 user 和 auth
 - **「找不到 claude」**：从程序坞启动的 dsh 只有很短的 PATH，插件会去常见安装位置找；装在别处就配 `claudeBin`。
 - **「回答不是约定的 JSON 格式」**：模型没按格式回答，原文在当天的 `.log` 里。会自动换下一个 agent。
 
+## 纳指
+
+控制面板「今日」那一行下面的一行，长这样：
+
+```
+纳指   10-08 周四 -1.39%   乖离分 6.3   SMA 5/5                08:11 更新 · 刷新
+```
+
+- **日期和涨跌幅**：最近一个已收盘的美股交易日（周一早上看到的是上周五），`^NDX` 收盘价比前一交易日的涨跌，涨绿跌红，和 nasdaq_valuation 的邮件报告一致。
+- **乖离分**：乖离分位评分（0–10），即价格对 250 日均线的乖离在 10 年里的分位，报告里的 `SCORE`。
+- **SMA**：SMA 三线评分（0–5），报告里的 `SMA 三线评分`。
+- **最右边**：今天这次更新的状态：「08:11 更新」、到点前的「08:10 自动更新」、「正在更新…」，或者红字「更新失败」。旁边的「刷新」「重试」「现在更新」随时可以点。
+
+鼠标停在这一行上会显示收盘价和前收；更新失败时显示原因和日志位置。今天还没更新成功时，这一行继续显示最近一次拿到的数，看日期就知道是哪天的。
+
+### 配置
+
+和 `advice` 一样写在本插件条目的 `config` 里（注意事项见[今日建议的配置](#配置)），改完重启 dsh：
+
+```yaml
+- id: dsh-plugin-control-panel
+  config:
+    nasdaq:
+      cwd: ~/dev_code/HappyLifeFinance/tools/nasdaq_valuation
+      at: "08:10"
+```
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `cwd` | 无，不配就不跑 | nasdaq_valuation 的目录，`~` 会展开 |
+| `at` | `08:10` | 每天几点以后开始跑，本地时间 `HH:MM`，要加引号 |
+| `command` | `[/usr/bin/python3, main.py]` | 在 `cwd` 里运行的命令，写成列表；路径里的 `~` 会展开。换成别的命令时，它必须重写 `latest_signals.json` |
+| `timeoutMinutes` | `5` | 最多跑多久 |
+
+### 怎么拿数
+
+到点后在 `cwd` 里运行一次 `command`（默认就是 `python3 main.py`，平时手动跑的那个），退出码 0 之后读它留下的两个文件：
+
+| 文件 | 读什么 |
+|---|---|
+| `latest_signals.json` | `report_date`（交易日）、`signals.valuation_score`、`signals.sma_score`、`signals.ndx_close`。这是 main.py 给下游程序准备的结构化输出，数字和 `latest_report.txt` 上印的逐位一致 |
+| `cache/ndx_daily.csv` | 交易日那一行和它前一行的 `Close`，算涨跌幅。读不到时涨跌幅显示「—」，两个评分照常显示 |
+
+`latest_signals.json` 的 `generated_at` 早于这次运行开始的时间，就算失败：说明命令没有重写它，读到的是旧数。
+
+跑 main.py 会照常刷新它自己的 `latest_signals.json`、`latest_report.txt` 和 `cache/`，和平时手动跑、巡检任务跑一样。08:10 时美股已经收盘几个小时，拿到的是完整的日 K。
+
+什么时候跑、失败怎么重试，和今日建议一样：只在 dsh 开着时跑，启动 20 秒后检查一次、之后每 5 分钟一次；失败 30 分钟后重试，一天最多自动重试 3 次。周末也照跑，显示的仍是上一个交易日的数。
+
+### 文件
+
+在消息目录的 `nasdaq/` 子目录里，和 `advice/` 的写法一样：
+
+| 文件 | 内容 |
+|---|---|
+| `<日期>.json` | 当天的结果：`report_date`、`close`、`prev_date`、`prev_close`、`change_pct`、`valuation_score`、`sma_score`，外加什么时候拿到的、失败原因 |
+| `<日期>.log` | 每次运行的命令行、退出码、输出尾部。更新失败时先看这里 |
+| `run.lock` | 正在跑时存在 |
+
 ## 安装
 
 本包是纯 JS，不需要构建。
@@ -383,11 +443,12 @@ dsh plugin --profile <profile> add /绝对路径/dsh-plugin-control-panel
 |---|---|
 | `package.json` | `dsh.bundle` 声明这是一个组合包，`dsh.client` 声明浏览器半侧 |
 | `cordis.patch.yml` | 往 profile 里插入本插件的一行 |
-| `index.js` | Host 半：在 `/api/control-panel.*` 下注册消息的五条路由、备忘的四条路由和今日建议的三条路由，并启动今日建议的定时检查 |
+| `index.js` | Host 半：在 `/api/control-panel.*` 下注册消息的五条路由、备忘的四条路由、今日建议的三条路由和纳指的两条路由，并启动今日建议和纳指的定时检查 |
 | `inbox-store.js` | 读写 `inbox.jsonl` 和 `state.json` |
 | `memo-store.js` | 读写 `todos.json` |
-| `advice-store.js` | 读写 `advice/` 下的结果、日志、锁和已看标记 |
+| `advice-store.js` | 读写 `advice/` 下的结果、日志、锁和已看标记；`nasdaq/` 也用它 |
 | `advice-runner.js` | 今日建议：提示词、调用 claude / opencode、解析回答、定时，写好后写同步文件、调发信命令 |
+| `nasdaq-runner.js` | 纳指那一行：定时运行 nasdaq_valuation，读它的 `latest_signals.json` 和日 K 缓存 |
 | `scripts/init-inbox.sh` | 建消息目录 |
 | `scripts/mail-me` | 经 QQ 邮箱 SMTP 发一封纯文本邮件，见[发到邮箱](#发到邮箱) |
 | `client.js` | Client 半：左栏两个入口，「控制面板」和「今日」两页 |
@@ -405,7 +466,7 @@ dsh 的公共接口还在预稳定期，会变。这里有三道防线：
 
 ```sh
 npm install        # 只装 react / react-dom，给测试用
-npm test           # 存储单测；假宿主里渲染面板、走下发流程；消息、备忘和今日建议从文件到界面的联调；mail-me 只打印不发信的检查
+npm test           # 存储单测；假宿主里渲染面板、走下发流程；消息、备忘、今日建议和纳指从文件到界面的联调；mail-me 只打印不发信的检查
 ```
 
 两个探针要指向别的仓库的源码，平时不跑：
@@ -415,7 +476,7 @@ DSH_SRC=/path/to/deepseek-harness npm run test:host
 SIMPLEAGENT_SRC=/path/to/SimpleAgent npm run test:simpleagent
 ```
 
-- `test:host` 用 dsh 自己的代码检查：版本闸门放不放行、`dsh.client` 声明是否合法、四处 slot 注册和十二条路由的路径能否被接受。需要 Node 22.6 及以上。拉了新版 dsh 之后跑它。
+- `test:host` 用 dsh 自己的代码检查：版本闸门放不放行、`dsh.client` 声明是否合法、四处 slot 注册和十四条路由的路径能否被接受。需要 Node 22.6 及以上。拉了新版 dsh 之后跑它。
 - `test:simpleagent` 让 SimpleAgent 的 `store.py` 和本插件操作同一个目录，逐步比对两边看到的消息状态和备忘。需要 `python3`。只有和 SimpleAgent 共用目录时才用得上，它改了文件格式之后跑。
 
 这些测试都不启动真实的 dsh，所以替代不了装进去点一遍。

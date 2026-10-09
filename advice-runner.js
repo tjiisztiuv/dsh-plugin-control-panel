@@ -45,11 +45,11 @@ const MAIL_TIMEOUT_MS = 4 * 60 * 1000
 /** Last match wins in opencode's permission rules, so the allows after "*" are what stays possible. */
 const OPENCODE_READ_ONLY = JSON.stringify({ '*': 'deny', read: 'allow', glob: 'allow', grep: 'allow', list: 'allow' })
 
-function isRecord(value) {
+export function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
-function stringOr(value, fallback) {
+export function stringOr(value, fallback) {
   return typeof value === 'string' ? value.trim() : fallback
 }
 
@@ -80,7 +80,7 @@ export function normalizeAdviceSettings(raw) {
 }
 
 /** A command as an argument list, from a path or a list starting with one; [] when there is none. */
-function commandOf(value) {
+export function commandOf(value) {
   const listed = Array.isArray(value) ? value : typeof value === 'string' ? [value] : []
   const parts = listed.filter(part => typeof part === 'string' || typeof part === 'number').map(part => String(part).trim())
   if (parts.length === 0 || parts[0] === '') return []
@@ -126,7 +126,7 @@ export function buildPrompt(now) {
 }`
 }
 
-function clip(text, limit) {
+export function clip(text, limit) {
   const chars = Array.from(text)
   return chars.length <= limit ? text : `${chars.slice(0, limit).join('')}…`
 }
@@ -202,7 +202,7 @@ export function resolveBin(agent, configured, env = process.env) {
 }
 
 /** PATH for the agent: its own directory and the usual tool directories first, then what we were given. */
-function pathFor(bin, env) {
+export function pathFor(bin, env) {
   const extra = [dirname(bin), join(homedir(), '.local/bin'), join(homedir(), '.opencode/bin'), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin']
   return [...new Set([...extra, ...String(env.PATH ?? '').split(delimiter)].filter(part => part !== '' && part !== '.'))].join(delimiter)
 }
@@ -275,7 +275,7 @@ function reasonFrom(stderr, stdout) {
  * Run a command to its end, keeping the head of its output. `input`, when given, is written to its stdin.
  * @returns { code, killedBy, error, timedOut, aborted, stdout, stderr, seconds }; `error` is set when it never ran.
  */
-function runToEnd(bin, args, { cwd, env, input, timeoutMs, signal }) {
+export function runToEnd(bin, args, { cwd, env, input, timeoutMs, signal }) {
   const started = Date.now()
   return new Promise((resolve) => {
     const stdout = collector(STDOUT_LIMIT)
@@ -321,7 +321,7 @@ function runToEnd(bin, args, { cwd, env, input, timeoutMs, signal }) {
 }
 
 /** Why a finished {@link runToEnd} failed, or null when it exited 0. `missing` is the message for ENOENT. */
-function failureOf(run, { bin, missing, minutes }) {
+export function failureOf(run, { bin, missing, minutes }) {
   if (run.error !== null) return run.error.code === 'ENOENT' ? missing : `启动不了 ${bin}：${run.error.message}`
   if (run.timedOut) return `超过 ${minutes} 分钟没跑完`
   if (run.aborted) return '被中止'
@@ -333,7 +333,7 @@ function failureOf(run, { bin, missing, minutes }) {
 }
 
 /** What one process run adds to the day's log file. */
-function logOf(header, error, run) {
+export function logOf(header, error, run) {
   return `${header}\n# ${error === null ? 'ok' : `failed: ${error}`} · ${run.seconds}s\n`
     + `## stdout\n${tail(run.stdout)}\n## stderr\n${tail(run.stderr)}\n`
 }
@@ -461,7 +461,7 @@ export async function runMailProcess(command, { subject, body, signal, env = pro
 }
 
 /** Why the project directory cannot be used, or null. macOS privacy protection shows up here as EPERM. */
-function directoryProblem(cwd) {
+export function directoryProblem(cwd) {
   try {
     // Listing, not stat: macOS lets a blocked process stat the folder but not read it.
     readdirSync(cwd)
@@ -589,6 +589,23 @@ async function runLocked({ store, settings, trigger, signal, runAgent, lock }) {
 }
 
 /**
+ * Whether a daily job kept in `store` should run now: from `at` onward until a run of the day succeeds. A failed
+ * day is tried again `retryAfterMs` after its last failure, at most `maxFailures` times; never while a run holds
+ * the lock. Manual runs do not ask.
+ */
+export function dayIsDue(store, at, { maxFailures, retryAfterMs }) {
+  if (store.running() !== null) return false
+  const now = store.clock()
+  if (now < dueTimeOf(now, at)) return false
+  const record = store.read(store.today())
+  if (record === null) return true
+  if (record.status === 'ready') return false
+  const lastFailed = Date.parse(record.last_failed_at)
+  return (Number(record.failures) || 0) < maxFailures
+    && (Number.isNaN(lastFailed) || now.getTime() - lastFailed >= retryAfterMs)
+}
+
+/**
  * The Host half's side: answers the panel and starts a day's run once it is due. A run is due from `at`
  * onward until one succeeds; failed runs are retried after `retryAfterMs`, at most `maxFailures` times a
  * day, and a manual run is always allowed. It only runs while dsh does: opened after `at`, dsh starts the
@@ -639,15 +656,7 @@ export class AdviceService {
   }
 
   due() {
-    if (!this.enabled || this.store.running() !== null) return false
-    const now = this.clock()
-    if (now < dueTimeOf(now, this.settings.at)) return false
-    const record = this.store.read(this.store.today())
-    if (record === null) return true
-    if (record.status === 'ready') return false
-    const lastFailed = Date.parse(record.last_failed_at)
-    return (Number(record.failures) || 0) < this.maxFailures
-      && (Number.isNaN(lastFailed) || now.getTime() - lastFailed >= this.retryAfterMs)
+    return this.enabled && dayIsDue(this.store, this.settings.at, { maxFailures: this.maxFailures, retryAfterMs: this.retryAfterMs })
   }
 
   /** Start a run in the background. @returns whether it started (false: off, or another run is going). */
